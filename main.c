@@ -50,8 +50,8 @@
 /* USER CODE BEGIN PD */
 #define MAX_WIDTH 240
 #define MAX_HEIGHT 320
-#define AXIS_Y_POS      0
-#define TICK_HEIGHT     5
+#define AXIS_Y_POS 0
+#define TICK_HEIGHT 5
 #define BUFFER_SIZE 1000
 
 /* USER CODE END PD */
