@@ -12,11 +12,12 @@
   * This software component is licensed by ST under Ultimate Liberty license
   * SLA0044, the "License"; You may not use this file except in compliance with
   * the License. You may obtain a copy of the License at:
-  *                             www.st.com/SLA0044
+  * www.st.com/SLA0044
   *
   ******************************************************************************
   */
 /* USER CODE END Header */
+
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
@@ -37,8 +38,10 @@
 /* USER CODE BEGIN Includes */
 #include "../../../Drivers/BSP/STM32F429I-Discovery/stm32f429i_discovery.h"
 #include "../../../Drivers/BSP/STM32F429I-Discovery/stm32f429i_discovery_lcd.h"
+#include "../../../Drivers/BSP/STM32F429I-Discovery/stm32f429i_discovery_ts.h"
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -60,6 +63,25 @@
 #define SCREEN_RANGE_MV 24000
 #define SCREEN_MIN_MV -12000
 
+#define LCD_FRAME_BUFFER_LAYER0 LCD_FRAME_BUFFER
+#define LCD_FRAME_BUFFER_LAYER1  (LCD_FRAME_BUFFER + 0x50000)
+#define LCD_COLOR_ALMOST_BLACK 0xFF010101
+
+#define MENU_BTN_W          100
+#define MENU_BTN_H          60
+#define MENU_MARGIN_X       15
+#define MENU_GAP_X          10
+#define MENU_GAP_Y          10
+#define MENU_START_Y        60
+
+#define MENU_COL1_X         MENU_MARGIN_X
+#define MENU_COL2_X         (MENU_MARGIN_X + MENU_BTN_W + MENU_GAP_X)
+
+#define MENU_ROW1_Y         MENU_START_Y
+#define MENU_ROW2_Y         (MENU_START_Y + MENU_BTN_H + MENU_GAP_Y)
+#define MENU_ROW3_Y         (MENU_START_Y + 2 * (MENU_BTN_H + MENU_GAP_Y))
+
+#define MENU_TEXT_OFFSET_Y  20
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -72,8 +94,15 @@
 /* USER CODE BEGIN PV */
 volatile uint16_t measurementData[BUFFER_SIZE];
 uint16_t msrVal = 0;
+
 volatile uint32_t adc_ready = 0;
 volatile int measurement_counter = 0;
+volatile uint8_t menu_visible = 0;
+uint8_t button_prev_state = 0;
+TS_StateTypeDef TS_State;
+
+uint8_t show_vpp = 1;
+uint8_t show_rms = 1;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -84,10 +113,11 @@ int32_t convert(uint32_t);
 uint16_t calculate_position(uint16_t);
 void Draw_Buffer(uint16_t [BUFFER_SIZE], uint32_t color);
 int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit);
-void Draw_Y_Axis();
 void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]);
 void Draw_RMS(volatile uint16_t measurements[BUFFER_SIZE]);
+void Draw_Menu_Overlay(void);
 void Draw_Grid(void);
+void Draw_Full_Menu(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -134,36 +164,78 @@ int main(void)
   MX_ADC3_Init();
   MX_TIM3_Init();
   MX_TIM7_Init();
+
   /* USER CODE BEGIN 2 */
   BSP_LCD_Init();
   BSP_LCD_LayerDefaultInit(0, LCD_FRAME_BUFFER_LAYER0);
   BSP_LCD_SelectLayer(0);
   BSP_LCD_Clear(LCD_COLOR_BLACK);
   BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
+
   Draw_Grid();
+
   BSP_LCD_LayerDefaultInit(1, LCD_FRAME_BUFFER_LAYER1);
   BSP_LCD_SelectLayer(1);
   BSP_LCD_Clear(LCD_COLOR_BLACK);
   BSP_LCD_SetColorKeying(1, LCD_COLOR_BLACK);
+
+  if (BSP_TS_Init(MAX_WIDTH, MAX_HEIGHT) != TS_OK) {
+    BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
+    BSP_LCD_SetTextColor(LCD_COLOR_RED);
+    BSP_LCD_DisplayStringAt(0, MAX_HEIGHT / 2, (uint8_t *)"TS ERROR", CENTER_MODE);
+    HAL_Delay(1000);
+  }
+
   BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
   BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
   BSP_LCD_SetFont(&Font12);
   /* USER CODE END 2 */
 
-
   /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  HAL_ADC_Start_DMA(&hadc3, measurementData, BUFFER_SIZE);
+  HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
+
   while (1)
   {
-    /* USER CODE END WHILE */
+    uint8_t button_state = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0);
 
-    /* USER CODE BEGIN 3 */
-	  if (adc_ready) {
+    if (button_state == GPIO_PIN_SET && button_prev_state == GPIO_PIN_RESET) {
+      menu_visible = !menu_visible;
+      if (menu_visible) {
+        Draw_Full_Menu();
+      } else {
+        BSP_LCD_Clear(LCD_COLOR_BLACK);
+        HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
+      }
+      HAL_Delay(50);
+    }
+    button_prev_state = button_state;
+
+    if (menu_visible) {
+      BSP_TS_GetState(&TS_State);
+      if (TS_State.TouchDetected) {
+        uint16_t x = TS_State.X;
+        uint16_t y = TS_State.Y;
+
+        if (x >= MENU_COL1_X && x <= (MENU_COL1_X + MENU_BTN_W) &&
+            y >= MENU_ROW1_Y && y <= (MENU_ROW1_Y + MENU_BTN_H)) {
+          show_vpp = !show_vpp;
+          Draw_Full_Menu();
+          HAL_Delay(200);
+        }
+        else if (x >= MENU_COL2_X && x <= (MENU_COL2_X + MENU_BTN_W) &&
+                 y >= MENU_ROW1_Y && y <= (MENU_ROW1_Y + MENU_BTN_H)) {
+          show_rms = !show_rms;
+          Draw_Full_Menu();
+          HAL_Delay(200);
+        }
+      }
+    }
+    else if (adc_ready) {
       adc_ready = 0;
       uint16_t trigger_level = 2048;
-      int search_limit = BUFFER_SIZE - MAX_WIDTH;
+      int search_limit = 2*MAX_WIDTH;
       int trigger_idx = Find_Trigger_Index(measurementData, trigger_level, search_limit);
       static int last_trigger_idx = 0;
 
@@ -242,7 +314,6 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
-
 int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit) {
   int hysteresis = 50;
   if (level < hysteresis) hysteresis = level;
@@ -280,7 +351,7 @@ uint16_t calculate_position(uint16_t value) {
 void Draw_Grid(void)
 {
   uint32_t originalColor = BSP_LCD_GetTextColor();
-  sFONT originalFont = BSP_LCD_GetFont();
+  sFONT *originalFont = BSP_LCD_GetFont();
 
   BSP_LCD_SetFont(&Font12);
 
@@ -289,7 +360,7 @@ void Draw_Grid(void)
   int div_x = MAX_WIDTH / 10;
 
   for (int i = 1; i < 10; i++) {
-    uint16_t x = i div_x;
+    uint16_t x = i * div_x;
     int time_label = i - 5;
 
     BSP_LCD_SetTextColor(LCD_COLOR_DARKGRAY);
@@ -302,17 +373,17 @@ void Draw_Grid(void)
     sprintf(label, "%d", time_label);
 
     if (time_label == 0) {
-      BSP_LCD_DisplayStringAt(x + 4, center_y + 6, (uint8_t )label, LEFT_MODE);
+      BSP_LCD_DisplayStringAt(x + 4, center_y + 6, (uint8_t *)label, LEFT_MODE);
     } else if (time_label > 0) {
-      BSP_LCD_DisplayStringAt(x - 3, center_y + 6, (uint8_t)label, LEFT_MODE);
+      BSP_LCD_DisplayStringAt(x - 3, center_y + 6, (uint8_t *)label, LEFT_MODE);
     } else {
-      BSP_LCD_DisplayStringAt(x - 10, center_y + 6, (uint8_t )label, LEFT_MODE);
+      BSP_LCD_DisplayStringAt(x - 10, center_y + 6, (uint8_t *)label, LEFT_MODE);
     }
   }
 
   for (int k = -4; k <= 4; k++)
   {
-    int32_t v_mv = k 2500;
+    int32_t v_mv = k * 2500;
 
     int32_t voltage_from_bottom = v_mv - SCREEN_MIN_MV;
     uint16_t height_from_bottom = (uint16_t)((voltage_from_bottom * MAX_HEIGHT) / SCREEN_RANGE_MV);
@@ -342,7 +413,6 @@ void Draw_Grid(void)
   BSP_LCD_SetTextColor(originalColor);
   BSP_LCD_SetFont(originalFont);
 }
-
 
 uint16_t Calculate_Vpp(uint16_t measurements[BUFFER_SIZE]) {
   uint16_t max = measurements[0];
@@ -393,38 +463,104 @@ void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]) {
   BSP_LCD_DisplayStringAt(5, 5, (uint8_t *)buffer, LEFT_MODE);
 }
 
-void Draw_Buffer(uint16_t buffer[BUFFER_SIZE], uint32_t color) {
-    uint16_t x_prev = 0;
-    uint16_t y_prev = 0;
+void Draw_Buffer(uint16_t *buffer, uint32_t color) {
+  static uint16_t old_buffer[MAX_WIDTH];
 
-    BSP_LCD_SetTextColor(color);
+  BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+  for (int i = 1; i < MAX_WIDTH; i++) {
+    BSP_LCD_DrawLine(i - 1, MAX_HEIGHT - old_buffer[i - 1], i, MAX_HEIGHT - old_buffer[i]);
+  }
 
-    for(int i = 0; i < MAX_HEIGHT; i++) {
-        uint16_t x_curr = buffer[i];
-        uint16_t y_curr = i;
-
-        if (i > 0) {
-            BSP_LCD_DrawLine(x_prev, y_prev, x_curr, y_curr);
-        }
-        x_prev = x_curr;
-        y_prev = y_curr;
-    }
+  BSP_LCD_SetTextColor(color);
+  for (int i = 1; i < MAX_WIDTH; i++) {
+    BSP_LCD_DrawLine(i - 1, MAX_HEIGHT - buffer[i - 1], i, MAX_HEIGHT - buffer[i]);
+    old_buffer[i - 1] = buffer[i - 1];
+  }
+  old_buffer[MAX_WIDTH - 1] = buffer[MAX_WIDTH - 1];
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
-	if (hadc->Instance == ADC3) {
-			adc_ready = 1;
-	    }
+  if (hadc->Instance == ADC3) {
+    adc_ready = 1;
+  }
 }
 
 void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
 {
-    if (hadc->Instance == ADC3) {
-    	HAL_GPIO_TogglePin(GPIOG, GPIO_PIN_13);
-    	HAL_ADC_Stop_DMA(hadc);
-    	HAL_ADC_Start_DMA(hadc, measurementData, BUFFER_SIZE);
-    }
+  if (hadc->Instance == ADC3) {
+    HAL_GPIO_TogglePin(GPIOG, GPIO_PIN_13);
+    HAL_ADC_Stop_DMA(hadc);
+    HAL_ADC_Start_DMA(hadc, (uint32_t*)measurementData, BUFFER_SIZE);
+  }
+}
+
+void Draw_Full_Menu(void) {
+  BSP_LCD_Clear(LCD_COLOR_LIGHTGRAY);
+
+  BSP_LCD_SetBackColor(LCD_COLOR_LIGHTGRAY);
+  BSP_LCD_SetTextColor(LCD_COLOR_ALMOST_BLACK);
+  BSP_LCD_SetFont(&Font24);
+  BSP_LCD_DisplayStringAt(0, 10, (uint8_t *)"USTAWIENIA", CENTER_MODE);
+
+  BSP_LCD_SetFont(&Font12);
+  BSP_LCD_DisplayStringAt(0, 35, (uint8_t *)"Wybierz opcje:", CENTER_MODE);
+
+  if (show_vpp) {
+    BSP_LCD_SetTextColor(LCD_COLOR_DARKGREEN);
+    BSP_LCD_SetBackColor(LCD_COLOR_DARKGREEN);
+  } else {
+    BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+    BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  }
+  BSP_LCD_FillRect(MENU_COL1_X, MENU_ROW1_Y, MENU_BTN_W, MENU_BTN_H);
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  BSP_LCD_SetFont(&Font16);
+  if (show_vpp) BSP_LCD_DisplayStringAt(MENU_COL1_X + 20, MENU_ROW1_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Vpp:ON", LEFT_MODE);
+  else          BSP_LCD_DisplayStringAt(MENU_COL1_X + 15, MENU_ROW1_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Vpp:OFF", LEFT_MODE);
+
+  if (show_rms) {
+    BSP_LCD_SetTextColor(LCD_COLOR_DARKGREEN);
+    BSP_LCD_SetBackColor(LCD_COLOR_DARKGREEN);
+  } else {
+    BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+    BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  }
+  BSP_LCD_FillRect(MENU_COL2_X, MENU_ROW1_Y, MENU_BTN_W, MENU_BTN_H);
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  if (show_rms) BSP_LCD_DisplayStringAt(MENU_COL2_X + 20, MENU_ROW1_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"RMS:ON", LEFT_MODE);
+  else          BSP_LCD_DisplayStringAt(MENU_COL2_X + 15, MENU_ROW1_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"RMS:OFF", LEFT_MODE);
+
+  BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+  BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  BSP_LCD_FillRect(MENU_COL1_X, MENU_ROW2_Y, MENU_BTN_W, MENU_BTN_H);
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  BSP_LCD_DisplayStringAt(MENU_COL1_X + 30, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Hz", LEFT_MODE);
+
+  BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+  BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  BSP_LCD_FillRect(MENU_COL2_X, MENU_ROW2_Y, MENU_BTN_W, MENU_BTN_H);
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  BSP_LCD_DisplayStringAt(MENU_COL2_X + 30, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"FFT", LEFT_MODE);
+
+  BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+  BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  BSP_LCD_FillRect(MENU_COL1_X, MENU_ROW3_Y, MENU_BTN_W, MENU_BTN_H);
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  BSP_LCD_DisplayStringAt(MENU_COL1_X + 15, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Kursory", LEFT_MODE);
+
+  BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+  BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  BSP_LCD_FillRect(MENU_COL2_X, MENU_ROW3_Y, MENU_BTN_W, MENU_BTN_H);
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  BSP_LCD_DisplayStringAt(MENU_COL2_X + 15, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Trigger", LEFT_MODE);
+
+  BSP_LCD_SetBackColor(LCD_COLOR_LIGHTGRAY);
+  BSP_LCD_SetTextColor(LCD_COLOR_ALMOST_BLACK);
+  BSP_LCD_SetFont(&Font12);
+  BSP_LCD_DisplayStringAt(0, 280, (uint8_t *)"Wcisnij przycisk USER", CENTER_MODE);
+  BSP_LCD_DisplayStringAt(0, 300, (uint8_t *)"aby wrocic", CENTER_MODE);
+  BSP_LCD_SetBackColor(LCD_COLOR_ALMOST_BLACK);
 }
 
 /* USER CODE END 4 */
@@ -465,7 +601,7 @@ void Error_Handler(void)
 #ifdef  USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
+  * where the assert_param error has occurred.
   * @param  file: pointer to the source file name
   * @param  line: assert_param error line source number
   * @retval None
