@@ -80,6 +80,8 @@ void Draw_Buffer(uint16_t [BUFFER_SIZE], uint32_t color);
 void Process_Data(volatile uint16_t [BUFFER_SIZE], uint16_t [BUFFER_SIZE]);
 int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit);
 void Draw_Y_Axis();
+void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]);
+void Draw_RMS(volatile uint16_t measurements[BUFFER_SIZE]);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -157,6 +159,8 @@ int main(void)
 	      BSP_LCD_Clear(LCD_COLOR_BLACK);
 	      Draw_Buffer(&processedData[trigger_idx], LCD_COLOR_RED);
 	      Draw_Y_Axis();
+	      Draw_Vpp(measurementData);
+	      Draw_RMS(measurementData);
 	      HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
 	  }
 	  HAL_Delay(50);
@@ -274,7 +278,57 @@ void Draw_Y_Axis(void)
     BSP_LCD_SetFont(originalFont);
 }
 
+uint16_t Calculate_Vpp(uint16_t measurements[BUFFER_SIZE]){
+	uint16_t max = measurements[0];
+	uint16_t min = measurements[0];
+	for(int i=0; i<BUFFER_SIZE;i++){
+		if(measurements[i]>max){
+			max = measurements[i];
+		}
+		if(measurements[i]<min){
+			min = measurements[i];
+		}
+	}
+	return max - min;
+}
 
+float Calculate_RMS(volatile uint16_t *data) {
+    float sum = 0;
+    int mean = 0;
+    float vol;
+    for(int i = 0; i < BUFFER_SIZE; i++){
+    	mean +=data[i];
+    }
+    float mean_V = convert(mean);
+    mean_V = mean_V/BUFFER_SIZE;
+
+    for(int i = 0; i < BUFFER_SIZE; i++) {
+    	vol = convert(data[i]);
+        sum += ((vol - mean_V) * (vol - mean_V));
+    }
+    return sqrtf(sum/BUFFER_SIZE);
+}
+
+void Draw_RMS(volatile uint16_t measurements[BUFFER_SIZE]){
+	char buffer[30];
+	float RMS = Calculate_RMS(measurements);
+	sprintf(buffer,"%.2f",RMS);
+	BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+	BSP_LCD_SetFont(&Font16);
+	BSP_LCD_DisplayStringAt(0, 250, (uint8_t *)buffer, RIGHT_MODE);
+
+}
+
+void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]){
+	char buffer[30];
+	uint16_t Vpp_raw = Calculate_Vpp(measurements);
+	float Vpp = convert(Vpp_raw);
+	sprintf(buffer,"%.2f",Vpp);
+	BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+	BSP_LCD_SetFont(&Font16);
+	BSP_LCD_DisplayStringAt(0, 300, (uint8_t *)buffer, RIGHT_MODE);
+
+}
 void Draw_Buffer(uint16_t buffer[BUFFER_SIZE], uint32_t color) {
     uint16_t x_prev = 0;
     uint16_t y_prev = 0;
