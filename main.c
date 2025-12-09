@@ -87,6 +87,7 @@ int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit);
 void Draw_Y_Axis();
 void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]);
 void Draw_RMS(volatile uint16_t measurements[BUFFER_SIZE]);
+void Draw_Grid(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -135,10 +136,15 @@ int main(void)
   MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
   BSP_LCD_Init();
-  BSP_LCD_LayerDefaultInit(0, LCD_FRAME_BUFFER);
+  BSP_LCD_LayerDefaultInit(0, LCD_FRAME_BUFFER_LAYER0);
   BSP_LCD_SelectLayer(0);
-  BSP_LCD_DisplayOn();
   BSP_LCD_Clear(LCD_COLOR_BLACK);
+  BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
+  Draw_Grid();
+  BSP_LCD_LayerDefaultInit(1, LCD_FRAME_BUFFER_LAYER1);
+  BSP_LCD_SelectLayer(1);
+  BSP_LCD_Clear(LCD_COLOR_BLACK);
+  BSP_LCD_SetColorKeying(1, LCD_COLOR_BLACK);
   BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
   BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
   BSP_LCD_SetFont(&Font12);
@@ -271,38 +277,72 @@ uint16_t calculate_position(uint16_t value) {
   return (uint16_t)((voltage_from_bottom_mv * MAX_HEIGHT) / SCREEN_RANGE_MV);
 }
 
-void Draw_Y_Axis(void)
+void Draw_Grid(void)
 {
-    uint32_t originalColor = BSP_LCD_GetTextColor();
-    sFONT *originalFont = BSP_LCD_GetFont();
+  uint32_t originalColor = BSP_LCD_GetTextColor();
+  sFONT originalFont = BSP_LCD_GetFont();
+
+  BSP_LCD_SetFont(&Font12);
+
+  uint16_t center_y = MAX_HEIGHT / 2;
+  uint16_t center_x = MAX_WIDTH / 2;
+  int div_x = MAX_WIDTH / 10;
+
+  for (int i = 1; i < 10; i++) {
+    uint16_t x = i div_x;
+    int time_label = i - 5;
+
+    BSP_LCD_SetTextColor(LCD_COLOR_DARKGRAY);
+    BSP_LCD_DrawLine(x, 0, x, MAX_HEIGHT);
+
     BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-    BSP_LCD_SetFont(&Font12);
+    BSP_LCD_DrawLine(x, center_y - 3, x, center_y + 3);
 
-    BSP_LCD_DrawLine(0, AXIS_Y_POS, MAX_WIDTH, AXIS_Y_POS);
+    char label[4];
+    sprintf(label, "%d", time_label);
 
-    for (int v = 0; v <= 3; v++)
-    {
-        uint16_t x_pos = (uint16_t)((float)v / 3.3f * MAX_WIDTH);
-
-        if (x_pos >= MAX_WIDTH) x_pos = MAX_WIDTH - 1;
-
-        BSP_LCD_DrawLine(x_pos, AXIS_Y_POS, x_pos, AXIS_Y_POS + TICK_HEIGHT);
-
-        char label[5];
-        sprintf(label, "%dV", v);
-
-        if (v == 0) {
-            BSP_LCD_DisplayStringAt(x_pos + 2, AXIS_Y_POS + TICK_HEIGHT + 2, (uint8_t *)label, LEFT_MODE);
-        } else if (v == 3) {
-             BSP_LCD_DisplayStringAt(x_pos - 20, AXIS_Y_POS + TICK_HEIGHT + 2, (uint8_t *)label, LEFT_MODE);
-        } else {
-            BSP_LCD_DisplayStringAt(x_pos - 6, AXIS_Y_POS + TICK_HEIGHT + 2, (uint8_t *)label, LEFT_MODE);
-        }
+    if (time_label == 0) {
+      BSP_LCD_DisplayStringAt(x + 4, center_y + 6, (uint8_t )label, LEFT_MODE);
+    } else if (time_label > 0) {
+      BSP_LCD_DisplayStringAt(x - 3, center_y + 6, (uint8_t)label, LEFT_MODE);
+    } else {
+      BSP_LCD_DisplayStringAt(x - 10, center_y + 6, (uint8_t )label, LEFT_MODE);
     }
+  }
 
-    BSP_LCD_SetTextColor(originalColor);
-    BSP_LCD_SetFont(originalFont);
+  for (int k = -4; k <= 4; k++)
+  {
+    int32_t v_mv = k 2500;
+
+    int32_t voltage_from_bottom = v_mv - SCREEN_MIN_MV;
+    uint16_t height_from_bottom = (uint16_t)((voltage_from_bottom * MAX_HEIGHT) / SCREEN_RANGE_MV);
+    uint16_t y_pos = MAX_HEIGHT - height_from_bottom;
+
+    if (y_pos >= MAX_HEIGHT) y_pos = MAX_HEIGHT - 1;
+    if (y_pos == 0) y_pos = 1;
+
+    if (v_mv == 0) {
+      BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+    } else {
+      BSP_LCD_SetTextColor(LCD_COLOR_DARKGRAY);
+    }
+    BSP_LCD_DrawLine(0, y_pos, MAX_WIDTH, y_pos);
+
+    BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+    BSP_LCD_DrawLine(center_x - 3, y_pos, center_x + 3, y_pos);
+
+    if (k % 2 == 0 && v_mv != 0) {
+      char label_text[6];
+      sprintf(label_text, "%ld", v_mv / 1000);
+      BSP_LCD_DisplayStringAt(center_x + 6, y_pos - 6, (uint8_t *)label_text, LEFT_MODE);
+    }
+  }
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  BSP_LCD_DrawLine(center_x, 0, center_x, MAX_HEIGHT);
+  BSP_LCD_SetTextColor(originalColor);
+  BSP_LCD_SetFont(originalFont);
 }
+
 
 uint16_t Calculate_Vpp(uint16_t measurements[BUFFER_SIZE]) {
   uint16_t max = measurements[0];
