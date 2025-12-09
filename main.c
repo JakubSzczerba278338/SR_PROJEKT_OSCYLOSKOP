@@ -35,9 +35,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "stm32f429i_discovery_lcd.h"
-#include "stm32f429i_discovery_sdram.h"
+#include "../../../Drivers/BSP/STM32F429I-Discovery/stm32f429i_discovery.h"
+#include "../../../Drivers/BSP/STM32F429I-Discovery/stm32f429i_discovery_lcd.h"
 #include <stdio.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,7 +50,10 @@
 /* USER CODE BEGIN PD */
 #define MAX_WIDTH 240
 #define MAX_HEIGHT 320
-#define BUFFER_SIZE 160
+#define AXIS_Y_POS      0
+#define TICK_HEIGHT     5
+#define BUFFER_SIZE 1000
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -64,15 +68,18 @@ volatile uint16_t measurementData[BUFFER_SIZE];
 uint16_t processedData[BUFFER_SIZE];
 uint16_t msrVal = 0;
 volatile uint32_t adc_ready = 0;
+volatile int measurement_counter = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
-float convert(uint16_t);
+float convert(uint32_t);
 void Draw_Buffer(uint16_t [BUFFER_SIZE], uint32_t color);
 void Process_Data(volatile uint16_t [BUFFER_SIZE], uint16_t [BUFFER_SIZE]);
+int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit);
+void Draw_Y_Axis();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -130,18 +137,27 @@ int main(void)
   BSP_LCD_SetFont(&Font12);
   /* USER CODE END 2 */
 
-  /* USER CODE BEGIN WHILE */
-  HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
 
+  /* We should never get here as control is now taken by the scheduler */
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  HAL_ADC_Start_DMA(&hadc3, measurementData, BUFFER_SIZE);
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
 	  if (adc_ready) {
-	     adc_ready = 0;
-	     BSP_LCD_Clear(LCD_COLOR_BLACK);
-	     Draw_Buffer(processedData, LCD_COLOR_YELLOW);
+	      adc_ready = 0;
+	      uint16_t trigger_level = 1000;
+	      int trigger_idx = Find_Trigger_Index(measurementData, trigger_level, 2*MAX_HEIGHT);
+	     		  if (trigger_idx == 65535) {
+	     			  trigger_idx = 1;
+	     		  }
+	      BSP_LCD_Clear(LCD_COLOR_BLACK);
+	      Draw_Buffer(&processedData[trigger_idx], LCD_COLOR_RED);
+	      Draw_Y_Axis();
+	      HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
 	  }
 	  HAL_Delay(50);
   }
@@ -201,12 +217,63 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-float convert(uint16_t AdcValue) {
-	return (((float) AdcValue)/4095) * 2.92;
+
+
+int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit) {
+
+    for (int i = 10; i < limit; i++) {
+       if(data[i] <= level && data[i+1] > level){
+    	   return i;
+       }
+    }
+
+    return 65535;
+}
+
+float convert(uint32_t AdcValue) {
+	return (((float) AdcValue)/4095) * 3;
 }
 uint16_t calculate_position(uint16_t value) {
 	return (uint16_t)((float)(value)/4095 * MAX_WIDTH);
 }
+
+
+
+
+
+void Draw_Y_Axis(void)
+{
+    uint32_t originalColor = BSP_LCD_GetTextColor();
+    sFONT *originalFont = BSP_LCD_GetFont();
+    BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+    BSP_LCD_SetFont(&Font12);
+
+    BSP_LCD_DrawLine(0, AXIS_Y_POS, MAX_WIDTH, AXIS_Y_POS);
+
+    for (int v = 0; v <= 3; v++)
+    {
+        uint16_t x_pos = (uint16_t)((float)v / 3.3f * MAX_WIDTH);
+
+        if (x_pos >= MAX_WIDTH) x_pos = MAX_WIDTH - 1;
+
+        BSP_LCD_DrawLine(x_pos, AXIS_Y_POS, x_pos, AXIS_Y_POS + TICK_HEIGHT);
+
+        char label[5];
+        sprintf(label, "%dV", v);
+
+        if (v == 0) {
+            BSP_LCD_DisplayStringAt(x_pos + 2, AXIS_Y_POS + TICK_HEIGHT + 2, (uint8_t *)label, LEFT_MODE);
+        } else if (v == 3) {
+             BSP_LCD_DisplayStringAt(x_pos - 20, AXIS_Y_POS + TICK_HEIGHT + 2, (uint8_t *)label, LEFT_MODE);
+        } else {
+            BSP_LCD_DisplayStringAt(x_pos - 6, AXIS_Y_POS + TICK_HEIGHT + 2, (uint8_t *)label, LEFT_MODE);
+        }
+    }
+
+    BSP_LCD_SetTextColor(originalColor);
+    BSP_LCD_SetFont(originalFont);
+}
+
 
 void Draw_Buffer(uint16_t buffer[BUFFER_SIZE], uint32_t color) {
     uint16_t x_prev = 0;
@@ -214,9 +281,9 @@ void Draw_Buffer(uint16_t buffer[BUFFER_SIZE], uint32_t color) {
 
     BSP_LCD_SetTextColor(color);
 
-    for(int i = 0; i < BUFFER_SIZE; i++) {
+    for(int i = 0; i < MAX_HEIGHT; i++) {
         uint16_t x_curr = buffer[i];
-        uint16_t y_curr = i*2;
+        uint16_t y_curr = i;
 
         if (i > 0) {
             BSP_LCD_DrawLine(x_prev, y_prev, x_curr, y_curr);
@@ -245,7 +312,7 @@ void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
     if (hadc->Instance == ADC3) {
     	HAL_GPIO_TogglePin(GPIOG, GPIO_PIN_13);
     	HAL_ADC_Stop_DMA(hadc);
-    	HAL_ADC_Start_DMA(hadc, (uint32_t*) measurementData, BUFFER_SIZE);
+    	HAL_ADC_Start_DMA(hadc, measurementData, BUFFER_SIZE);
     }
 }
 
