@@ -52,7 +52,13 @@
 #define MAX_HEIGHT 320
 #define AXIS_Y_POS 0
 #define TICK_HEIGHT 5
-#define BUFFER_SIZE 1000
+#define BUFFER_SIZE 1024
+#define ADC_RESOLUTION 4095
+
+#define REAL_RANGE_MV 20000
+#define REAL_MIN_MV  -10000
+#define SCREEN_RANGE_MV 24000
+#define SCREEN_MIN_MV -12000
 
 /* USER CODE END PD */
 
@@ -65,7 +71,6 @@
 
 /* USER CODE BEGIN PV */
 volatile uint16_t measurementData[BUFFER_SIZE];
-uint16_t processedData[BUFFER_SIZE];
 uint16_t msrVal = 0;
 volatile uint32_t adc_ready = 0;
 volatile int measurement_counter = 0;
@@ -75,9 +80,9 @@ volatile int measurement_counter = 0;
 void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
-float convert(uint32_t);
+int32_t convert(uint32_t);
+uint16_t calculate_position(uint16_t);
 void Draw_Buffer(uint16_t [BUFFER_SIZE], uint32_t color);
-void Process_Data(volatile uint16_t [BUFFER_SIZE], uint16_t [BUFFER_SIZE]);
 int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit);
 void Draw_Y_Axis();
 void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]);
@@ -252,17 +257,19 @@ int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit) {
   return 65535;
 }
 
-
-float convert(uint32_t AdcValue) {
-	return (((float) AdcValue)/4095) * 3;
+int32_t convert(uint32_t AdcValue) {
+  return ((int32_t)AdcValue * REAL_RANGE_MV) / ADC_RESOLUTION + REAL_MIN_MV;
 }
+
+int32_t convert_scale_only(uint32_t AdcValue) {
+  return ((int32_t)AdcValue * REAL_RANGE_MV) / ADC_RESOLUTION;
+}
+
 uint16_t calculate_position(uint16_t value) {
-	return (uint16_t)((float)(value)/4095 * MAX_WIDTH);
+  int32_t voltage_mv = ((int32_t)value * REAL_RANGE_MV) / ADC_RESOLUTION + REAL_MIN_MV;
+  int32_t voltage_from_bottom_mv = voltage_mv - SCREEN_MIN_MV;
+  return (uint16_t)((voltage_from_bottom_mv * MAX_HEIGHT) / SCREEN_RANGE_MV);
 }
-
-
-
-
 
 void Draw_Y_Axis(void)
 {
@@ -297,57 +304,55 @@ void Draw_Y_Axis(void)
     BSP_LCD_SetFont(originalFont);
 }
 
-uint16_t Calculate_Vpp(uint16_t measurements[BUFFER_SIZE]){
-	uint16_t max = measurements[0];
-	uint16_t min = measurements[0];
-	for(int i=0; i<BUFFER_SIZE;i++){
-		if(measurements[i]>max){
-			max = measurements[i];
-		}
-		if(measurements[i]<min){
-			min = measurements[i];
-		}
-	}
-	return max - min;
-}
-
-float Calculate_RMS(volatile uint16_t *data) {
-    float sum = 0;
-    int mean = 0;
-    float vol;
-    for(int i = 0; i < BUFFER_SIZE; i++){
-    	mean +=data[i];
+uint16_t Calculate_Vpp(uint16_t measurements[BUFFER_SIZE]) {
+  uint16_t max = measurements[0];
+  uint16_t min = measurements[0];
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    if (measurements[i] > max) {
+      max = measurements[i];
     }
-    float mean_V = convert(mean);
-    mean_V = mean_V/BUFFER_SIZE;
-
-    for(int i = 0; i < BUFFER_SIZE; i++) {
-    	vol = convert(data[i]);
-        sum += ((vol - mean_V) * (vol - mean_V));
+    if (measurements[i] < min) {
+      min = measurements[i];
     }
-    return sqrtf(sum/BUFFER_SIZE);
+  }
+  return max - min;
 }
 
-void Draw_RMS(volatile uint16_t measurements[BUFFER_SIZE]){
-	char buffer[30];
-	float RMS = Calculate_RMS(measurements);
-	sprintf(buffer,"%.2f",RMS);
-	BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-	BSP_LCD_SetFont(&Font16);
-	BSP_LCD_DisplayStringAt(0, 250, (uint8_t *)buffer, RIGHT_MODE);
+int32_t Calculate_RMS(volatile uint16_t *data) {
+  uint64_t sum_squares = 0;
+  uint32_t sum_adc = 0;
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    sum_adc += data[i];
+  }
+  int32_t mean_adc = sum_adc / BUFFER_SIZE;
 
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    int32_t deviation = (int32_t)data[i] - mean_adc;
+    sum_squares += (int64_t)(deviation * deviation);
+  }
+  float rms_adc = sqrtf((float)sum_squares / BUFFER_SIZE);
+  return convert_scale_only((uint32_t)rms_adc);
 }
 
-void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]){
-	char buffer[30];
-	uint16_t Vpp_raw = Calculate_Vpp(measurements);
-	float Vpp = convert(Vpp_raw);
-	sprintf(buffer,"%.2f",Vpp);
-	BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-	BSP_LCD_SetFont(&Font16);
-	BSP_LCD_DisplayStringAt(0, 300, (uint8_t *)buffer, RIGHT_MODE);
-
+void Draw_RMS(volatile uint16_t measurements[BUFFER_SIZE]) {
+  char buffer[32];
+  int32_t rms_mv = Calculate_RMS(measurements);
+  sprintf(buffer, "RMS:%2ld.%02ldV", rms_mv / 1000, (rms_mv % 1000) / 10);
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  BSP_LCD_SetFont(&Font12);
+  BSP_LCD_DisplayStringAt(5, 20, (uint8_t *)buffer, LEFT_MODE);
 }
+
+void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]) {
+  char buffer[32];
+  uint16_t Vpp_raw = Calculate_Vpp(measurements);
+  int32_t vpp_mv = convert_scale_only(Vpp_raw);
+  sprintf(buffer, "Vpp:%2ld.%02ldV", vpp_mv / 1000, (vpp_mv % 1000) / 10);
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  BSP_LCD_SetFont(&Font12);
+  BSP_LCD_DisplayStringAt(5, 5, (uint8_t *)buffer, LEFT_MODE);
+}
+
 void Draw_Buffer(uint16_t buffer[BUFFER_SIZE], uint32_t color) {
     uint16_t x_prev = 0;
     uint16_t y_prev = 0;
@@ -366,16 +371,9 @@ void Draw_Buffer(uint16_t buffer[BUFFER_SIZE], uint32_t color) {
     }
 }
 
-void Process_Data(volatile uint16_t inputData[BUFFER_SIZE], uint16_t outputData[BUFFER_SIZE]) {
-	for(int i = 0; i < BUFFER_SIZE; i++) {
-		outputData[i] = calculate_position(inputData[i]);
-	}
-}
-
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
 	if (hadc->Instance == ADC3) {
-			Process_Data(measurementData, processedData);
 			adc_ready = 1;
 	    }
 }
