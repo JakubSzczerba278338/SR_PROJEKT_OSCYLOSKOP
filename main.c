@@ -49,6 +49,7 @@
 /* USER CODE BEGIN PD */
 #define MAX_WIDTH 240
 #define MAX_HEIGHT 320
+#define BUFFER_SIZE 160
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -59,14 +60,19 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+volatile uint16_t measurementData[BUFFER_SIZE];
+uint16_t processedData[BUFFER_SIZE];
+uint16_t msrVal = 0;
+volatile uint32_t adc_ready = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
-
+float convert(uint16_t);
+void Draw_Buffer(uint16_t [BUFFER_SIZE], uint32_t color);
+void Process_Data(volatile uint16_t [BUFFER_SIZE], uint16_t [BUFFER_SIZE]);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -125,12 +131,19 @@ int main(void)
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN WHILE */
-  BSP_LCD_DisplayStringAt(5, 5, "ABC", LEFT_MODE);
+  HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
+
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  if (adc_ready) {
+	     adc_ready = 0;
+	     BSP_LCD_Clear(LCD_COLOR_BLACK);
+	     Draw_Buffer(processedData, LCD_COLOR_YELLOW);
+	  }
+	  HAL_Delay(50);
   }
   /* USER CODE END 3 */
 }
@@ -188,6 +201,36 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+float convert(uint16_t AdcValue) {
+	return (((float) AdcValue)/4095) * 2.92;
+}
+uint16_t calculate_position(uint16_t value) {
+	return (uint16_t)((float)(value)/4095 * MAX_WIDTH);
+}
+
+void Draw_Buffer(uint16_t buffer[BUFFER_SIZE], uint32_t color) {
+    uint16_t x_prev = 0;
+    uint16_t y_prev = 0;
+
+    BSP_LCD_SetTextColor(color);
+
+    for(int i = 0; i < BUFFER_SIZE; i++) {
+        uint16_t x_curr = buffer[i];
+        uint16_t y_curr = i*2;
+
+        if (i > 0) {
+            BSP_LCD_DrawLine(x_prev, y_prev, x_curr, y_curr);
+        }
+        x_prev = x_curr;
+        y_prev = y_curr;
+    }
+}
+
+void Process_Data(volatile uint16_t inputData[BUFFER_SIZE], uint16_t outputData[BUFFER_SIZE]) {
+	for(int i = 0; i < BUFFER_SIZE; i++) {
+		outputData[i] = calculate_position(inputData[i]);
+	}
+}
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
