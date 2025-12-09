@@ -150,20 +150,29 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 	  if (adc_ready) {
-	      adc_ready = 0;
-	      uint16_t trigger_level = 1000;
-	      int trigger_idx = Find_Trigger_Index(measurementData, trigger_level, 2*MAX_HEIGHT);
-	     		  if (trigger_idx == 65535) {
-	     			  trigger_idx = 1;
-	     		  }
-	      BSP_LCD_Clear(LCD_COLOR_BLACK);
-	      Draw_Buffer(&processedData[trigger_idx], LCD_COLOR_RED);
-	      Draw_Y_Axis();
-	      Draw_Vpp(measurementData);
-	      Draw_RMS(measurementData);
-	      HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
-	  }
-	  HAL_Delay(50);
+      adc_ready = 0;
+      uint16_t trigger_level = 2048;
+      int search_limit = BUFFER_SIZE - MAX_WIDTH;
+      int trigger_idx = Find_Trigger_Index(measurementData, trigger_level, search_limit);
+      static int last_trigger_idx = 0;
+
+      if (trigger_idx != 65535) {
+        last_trigger_idx = trigger_idx;
+      } else {
+        trigger_idx = last_trigger_idx;
+      }
+      if (trigger_idx > search_limit) trigger_idx = 0;
+
+      uint16_t displayData[MAX_WIDTH];
+
+      for (int i = 0; i < MAX_WIDTH; i++) {
+        displayData[i] = calculate_position(measurementData[trigger_idx + i]);
+      }
+      Draw_Buffer(displayData, LCD_COLOR_RED);
+      if (show_vpp) Draw_Vpp(measurementData);
+      if (show_rms) Draw_RMS(measurementData);
+      HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
+    }
   }
   /* USER CODE END 3 */
 }
@@ -224,15 +233,25 @@ void SystemClock_Config(void)
 
 
 int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit) {
+  int hysteresis = 50;
+  if (level < hysteresis) hysteresis = level;
+  uint16_t arm_level = level - hysteresis;
+  int state = 0;
 
-    for (int i = 10; i < limit; i++) {
-       if(data[i] <= level && data[i+1] > level){
-    	   return i;
-       }
+  for (int i = 0; i < limit; i++) {
+    if (state == 0) {
+      if (data[i] < arm_level) {
+        state = 1;
+      }
+    } else {
+      if (data[i] >= level) {
+        return i;
+      }
     }
-
-    return 65535;
+  }
+  return 65535;
 }
+
 
 float convert(uint32_t AdcValue) {
 	return (((float) AdcValue)/4095) * 3;
