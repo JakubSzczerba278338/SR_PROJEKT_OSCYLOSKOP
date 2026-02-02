@@ -103,6 +103,10 @@ TS_StateTypeDef TS_State;
 
 uint8_t show_vpp = 1;
 uint8_t show_rms = 1;
+
+uint8_t trigger_auto = 1;
+uint8_t trigger_locked = 0;
+uint16_t current_trig_level = 2048;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -112,7 +116,7 @@ void MX_FREERTOS_Init(void);
 int32_t convert(uint32_t);
 uint16_t calculate_position(uint16_t);
 void Draw_Buffer(uint16_t [BUFFER_SIZE], uint32_t color);
-int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit);
+int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit, int hysteresis);
 void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]);
 void Draw_RMS(volatile uint16_t measurements[BUFFER_SIZE]);
 void Draw_Menu_Overlay(void);
@@ -230,19 +234,54 @@ int main(void)
           Draw_Full_Menu();
           HAL_Delay(200);
         }
+        else if (x >= MENU_COL2_X && x <= (MENU_COL2_X + MENU_BTN_W) &&
+                 y >= MENU_ROW3_Y && y <= (MENU_ROW3_Y + MENU_BTN_H)) {
+          trigger_auto = !trigger_auto;
+          Draw_Full_Menu();
+          HAL_Delay(200);
+        }
       }
     }
     else if (adc_ready) {
       adc_ready = 0;
-      uint16_t trigger_level = 2048;
-      int search_limit = 2*MAX_WIDTH;
-      int trigger_idx = Find_Trigger_Index(measurementData, trigger_level, search_limit);
-      static int last_trigger_idx = 0;
-
-      if (trigger_idx != 65535) {
-        last_trigger_idx = trigger_idx;
+      
+      int hysteresis = 50;
+      
+      if (trigger_auto) {
+        uint16_t min_val = 4095;
+        uint16_t max_val = 0;
+        for(int i=0; i<BUFFER_SIZE; i++) {
+          if(measurementData[i] < min_val) min_val = measurementData[i];
+          if(measurementData[i] > max_val) max_val = measurementData[i];
+        }
+        uint16_t target_level = (min_val + max_val) / 2;
+        /* Wygładzanie poziomu triggera */
+        current_trig_level = (current_trig_level * 9 + target_level) / 10;
+        hysteresis = (max_val - min_val) / 10;
+        if (hysteresis < 20) hysteresis = 20;
       } else {
-        trigger_idx = last_trigger_idx;
+        current_trig_level = 2048;
+        hysteresis = 50;
+      }
+      
+      int search_limit = 2*MAX_WIDTH;
+      int trigger_idx = Find_Trigger_Index(measurementData, current_trig_level, search_limit, hysteresis);
+      static int last_trigger_idx = 0;
+      static int no_trigger_cnt = 0;
+
+      if (trigger_idx != -1) {
+        last_trigger_idx = trigger_idx;
+        no_trigger_cnt = 0;
+        trigger_locked = 1;
+      } else {
+        no_trigger_cnt++;
+        if (no_trigger_cnt > 5) {
+          trigger_idx = 0;
+          trigger_locked = 0;
+        } else {
+          trigger_idx = last_trigger_idx;
+          trigger_locked = 1;
+        }
       }
       if (trigger_idx > search_limit) trigger_idx = 0;
 
@@ -314,8 +353,7 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
-int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit) {
-  int hysteresis = 50;
+int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit, int hysteresis) {
   if (level < hysteresis) hysteresis = level;
   uint16_t arm_level = level - hysteresis;
   int state = 0;
@@ -331,7 +369,7 @@ int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit) {
       }
     }
   }
-  return 65535;
+  return -1;
 }
 
 int32_t convert(uint32_t AdcValue) {
@@ -549,11 +587,25 @@ void Draw_Full_Menu(void) {
   BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
   BSP_LCD_DisplayStringAt(MENU_COL1_X + 15, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Kursory", LEFT_MODE);
 
-  BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
-  BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  if (trigger_auto) {
+    BSP_LCD_SetTextColor(LCD_COLOR_DARKGREEN);
+    BSP_LCD_SetBackColor(LCD_COLOR_DARKGREEN);
+  } else {
+    BSP_LCD_SetTextColor(LCD_COLOR_ORANGE);
+    BSP_LCD_SetBackColor(LCD_COLOR_ORANGE);
+  }
   BSP_LCD_FillRect(MENU_COL2_X, MENU_ROW3_Y, MENU_BTN_W, MENU_BTN_H);
   BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-  BSP_LCD_DisplayStringAt(MENU_COL2_X + 15, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Trigger", LEFT_MODE);
+  if (trigger_auto) BSP_LCD_SetBackColor(LCD_COLOR_DARKGREEN);
+  else              BSP_LCD_SetBackColor(LCD_COLOR_ORANGE);
+  BSP_LCD_DisplayStringAt(MENU_COL2_X + 15, MENU_ROW3_Y + 15, (uint8_t *)"Trigger", LEFT_MODE);
+  if (trigger_auto) BSP_LCD_DisplayStringAt(MENU_COL2_X + 25, MENU_ROW3_Y + 35, (uint8_t *)"Auto", LEFT_MODE);
+  else              BSP_LCD_DisplayStringAt(MENU_COL2_X + 25, MENU_ROW3_Y + 35, (uint8_t *)"Man", LEFT_MODE);
+
+  /* Wskaźnik blokady triggera */
+  if (trigger_locked) BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+  else                BSP_LCD_SetTextColor(LCD_COLOR_RED);
+  BSP_LCD_FillCircle(MENU_COL2_X + MENU_BTN_W - 10, MENU_ROW3_Y + 10, 4);
 
   BSP_LCD_SetBackColor(LCD_COLOR_LIGHTGRAY);
   BSP_LCD_SetTextColor(LCD_COLOR_ALMOST_BLACK);
