@@ -141,8 +141,11 @@ float Calculate_Frequency(volatile uint16_t *data, uint16_t level, int hysteresi
 void Draw_Cursor_Info(uint16_t x1, uint16_t val1, uint16_t x2, uint16_t val2, uint8_t mode);
 void Draw_Menu_Overlay(void);
 void Draw_Grid(void);
+void Draw_FFT_Grid(void);
 void Draw_Full_Menu(void);
+void Draw_FFT_View(void);
 void Init_FFT(void);
+void Compute_FFT(float *vReal, float *vImag, uint16_t n);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -314,6 +317,13 @@ int main(void)
     }
     
     if (!menu_visible && (buf_half_ready || buf_full_ready)) {
+      if (show_fft_view) {
+        Draw_FFT_View();
+        buf_half_ready = 0;
+        buf_full_ready = 0;
+        continue;
+      }
+      
       volatile uint16_t *current_data_ptr;
       
       if (buf_half_ready) {
@@ -821,12 +831,153 @@ void Draw_Full_Menu(void) {
   BSP_LCD_SetBackColor(LCD_COLOR_ALMOST_BLACK);
 }
 
+/* ================= FFT IMPLEMENTATION ================= */
+
 void Init_FFT(void) {
     for (int k = 0; k < TWIDDLE_SIZE; k++) {
         float angle = -6.283185307f * (float)k / (float)FFT_SAMPLES;
         twiddle_real[k] = cosf(angle);
         twiddle_imag[k] = sinf(angle);
     }
+}
+
+void Compute_FFT(float *vReal, float *vImag, uint16_t n) {
+    /* Bit reversal */
+    uint16_t j = 0;
+    for (uint16_t i = 0; i < n; i++) {
+        if (i < j) {
+            float temp = vReal[i]; vReal[i] = vReal[j]; vReal[j] = temp;
+            temp = vImag[i]; vImag[i] = vImag[j]; vImag[j] = temp;
+        }
+        uint16_t bit = n >> 1;
+        while (j & bit) {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j ^= bit;
+    }
+
+    /* Butterfly Calculation */
+    for (uint16_t m = 1; m < n; m *= 2) {
+        uint16_t stride = n / (2 * m);
+        
+        for (uint16_t i = 0; i < n; i += 2 * m) {
+            for (uint16_t k = 0; k < m; k++) {
+                uint16_t tf_idx = k * stride;
+                float w_r = twiddle_real[tf_idx];
+                float w_i = twiddle_imag[tf_idx];
+                
+                float t_r = w_r * vReal[i + k + m] - w_i * vImag[i + k + m];
+                float t_i = w_r * vImag[i + k + m] + w_i * vReal[i + k + m];
+                
+                float u_r = vReal[i + k];
+                float u_i = vImag[i + k];
+                
+                vReal[i + k] = u_r + t_r;
+                vImag[i + k] = u_i + t_i;
+                vReal[i + k + m] = u_r - t_r;
+                vImag[i + k + m] = u_i - t_i;
+            }
+        }
+    }
+}
+
+void Draw_FFT_Grid(void) {
+  BSP_LCD_SelectLayer(0);
+  BSP_LCD_Clear(LCD_COLOR_BLACK);
+  BSP_LCD_SetFont(&Font8);
+  
+  float freq_per_px = 100000.0f / (float)MAX_WIDTH;
+  
+  BSP_LCD_SetTextColor(LCD_COLOR_DARKGRAY);
+  
+  int x_25k = (int)(25000 / freq_per_px);
+  BSP_LCD_DrawLine(x_25k, 20, x_25k, MAX_HEIGHT - 25);
+  
+  int x_50k = (int)(50000 / freq_per_px);
+  BSP_LCD_DrawLine(x_50k, 20, x_50k, MAX_HEIGHT - 25);
+  
+  int x_75k = (int)(75000 / freq_per_px);
+  BSP_LCD_DrawLine(x_75k, 20, x_75k, MAX_HEIGHT - 25);
+  
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  BSP_LCD_DrawLine(0, MAX_HEIGHT - 25, MAX_WIDTH, MAX_HEIGHT - 25);
+  
+  BSP_LCD_SetFont(&Font12);
+  BSP_LCD_DisplayStringAt(5, MAX_HEIGHT - 18, (uint8_t *)"0", LEFT_MODE);
+  BSP_LCD_DisplayStringAt(x_25k - 8, MAX_HEIGHT - 18, (uint8_t *)"25k", LEFT_MODE);
+  BSP_LCD_DisplayStringAt(x_50k - 8, MAX_HEIGHT - 18, (uint8_t *)"50k", LEFT_MODE);
+  BSP_LCD_DisplayStringAt(x_75k - 8, MAX_HEIGHT - 18, (uint8_t *)"75k", LEFT_MODE);
+  BSP_LCD_DisplayStringAt(MAX_WIDTH - 35, MAX_HEIGHT - 18, (uint8_t *)"100k", LEFT_MODE);
+  
+  BSP_LCD_DisplayStringAt(5, 5, (uint8_t *)"FFT [Hz]", LEFT_MODE);
+  
+  BSP_LCD_SelectLayer(1);
+}
+
+void Draw_FFT_View(void) {
+    if (!buf_full_ready && !buf_half_ready) return;
+    
+    volatile uint16_t *src;
+    if (buf_half_ready) src = measurementData;
+    else src = &measurementData[BUFFER_SIZE];
+    
+    for(int i=0; i<FFT_SAMPLES; i++) {
+        if (i < BUFFER_SIZE) {
+            fft_real[i] = (float)src[i];
+        } else {
+            fft_real[i] = 0.0f;
+        }
+        fft_imag[i] = 0.0f;
+    }
+    
+    /* Remove DC offset */
+    float sum = 0;
+    for(int i=0; i<BUFFER_SIZE; i++) sum += fft_real[i];
+    float mean = sum / (float)BUFFER_SIZE;
+    for(int i=0; i<BUFFER_SIZE; i++) fft_real[i] -= mean;
+
+    Compute_FFT(fft_real, fft_imag, FFT_SAMPLES);
+    
+    BSP_LCD_Clear(LCD_COLOR_BLACK);
+    
+    #define FFT_MAX_FREQ 100000
+    #define FFT_FREQ_PER_BIN (ADC_SAMPLE_RATE / FFT_SAMPLES)
+    int max_bin = FFT_MAX_FREQ / FFT_FREQ_PER_BIN;
+    if (max_bin > FFT_SAMPLES/2) max_bin = FFT_SAMPLES/2;
+    
+    BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
+    BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+    
+    float max_mag = 0;
+    for(int i=1; i<max_bin; i++) {
+        float mag = sqrtf(fft_real[i]*fft_real[i] + fft_imag[i]*fft_imag[i]);
+        fft_real[i] = mag;
+        if (mag > max_mag) max_mag = mag;
+    }
+    if (max_mag < 1.0f) max_mag = 1.0f;
+    
+    float bins_per_pixel = (float)max_bin / (float)MAX_WIDTH;
+    
+    for (int x = 0; x < MAX_WIDTH; x++) {
+        float local_max = 0;
+        int start_bin = (int)(x * bins_per_pixel);
+        int end_bin = (int)((x + 1) * bins_per_pixel);
+        if (end_bin > max_bin) end_bin = max_bin;
+        
+        for (int b = start_bin; b < end_bin; b++) {
+            if (b > 0 && fft_real[b] > local_max) local_max = fft_real[b];
+        }
+        
+        int bar_h = (int)((local_max / max_mag) * (MAX_HEIGHT - 50));
+        if (bar_h > MAX_HEIGHT - 50) bar_h = MAX_HEIGHT - 50;
+        
+        if (bar_h > 0) {
+            BSP_LCD_DrawLine(x, MAX_HEIGHT - 26 - bar_h, x, MAX_HEIGHT - 26);
+        }
+    }
+    
+    Draw_FFT_Grid();
 }
 
 /* USER CODE END 4 */
