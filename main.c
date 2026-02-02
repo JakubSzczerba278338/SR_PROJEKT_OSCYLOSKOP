@@ -63,6 +63,8 @@
 #define SCREEN_RANGE_MV 24000
 #define SCREEN_MIN_MV -12000
 
+#define ADC_SAMPLE_RATE 1400000
+
 #define LCD_FRAME_BUFFER_LAYER0 LCD_FRAME_BUFFER
 #define LCD_FRAME_BUFFER_LAYER1  (LCD_FRAME_BUFFER + 0x50000)
 #define LCD_COLOR_ALMOST_BLACK 0xFF010101
@@ -107,6 +109,7 @@ uint8_t show_rms = 1;
 uint8_t trigger_auto = 1;
 uint8_t trigger_locked = 0;
 uint16_t current_trig_level = 2048;
+uint8_t show_hz = 1;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -119,6 +122,8 @@ void Draw_Buffer(uint16_t [BUFFER_SIZE], uint32_t color);
 int Find_Trigger_Index(volatile uint16_t *data, uint16_t level, int limit, int hysteresis);
 void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]);
 void Draw_RMS(volatile uint16_t measurements[BUFFER_SIZE]);
+void Draw_Freq(float freq);
+float Calculate_Frequency(volatile uint16_t *data, uint16_t level, int hysteresis);
 void Draw_Menu_Overlay(void);
 void Draw_Grid(void);
 void Draw_Full_Menu(void);
@@ -240,6 +245,12 @@ int main(void)
           Draw_Full_Menu();
           HAL_Delay(200);
         }
+        else if (x >= MENU_COL1_X && x <= (MENU_COL1_X + MENU_BTN_W) &&
+                 y >= MENU_ROW2_Y && y <= (MENU_ROW2_Y + MENU_BTN_H)) {
+          show_hz = !show_hz;
+          Draw_Full_Menu();
+          HAL_Delay(200);
+        }
       }
     }
     else if (adc_ready) {
@@ -293,6 +304,10 @@ int main(void)
       Draw_Buffer(displayData, LCD_COLOR_RED);
       if (show_vpp) Draw_Vpp(measurementData);
       if (show_rms) Draw_RMS(measurementData);
+      if (show_hz) {
+        float freq = Calculate_Frequency(measurementData, current_trig_level, hysteresis);
+        Draw_Freq(freq);
+      }
       HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
     }
   }
@@ -501,6 +516,49 @@ void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]) {
   BSP_LCD_DisplayStringAt(5, 5, (uint8_t *)buffer, LEFT_MODE);
 }
 
+float Calculate_Frequency(volatile uint16_t *data, uint16_t level, int hysteresis) {
+    /* Find first edge */
+    int idx1 = Find_Trigger_Index(data, level, BUFFER_SIZE/2, hysteresis);
+    if (idx1 == -1) return 0.0f;
+    
+    /* Find second edge after the first one + small holdoff */
+    int holdoff = 5;
+    if (idx1 + holdoff >= BUFFER_SIZE) return 0.0f;
+    
+    int idx2 = Find_Trigger_Index(&data[idx1 + holdoff], level, BUFFER_SIZE - (idx1 + holdoff), hysteresis);
+    if (idx2 == -1) return 0.0f;
+    
+    idx2 += (idx1 + holdoff); /* Convert relative to absolute */
+    
+    int period_samples = idx2 - idx1;
+    if (period_samples == 0) return 0.0f;
+    
+    return (float)ADC_SAMPLE_RATE / period_samples;
+}
+
+void Draw_Freq(float freq) {
+  char buffer[32];
+  
+  /* Clear previous value area to avoid artifacts */
+  BSP_LCD_SetTextColor(LCD_COLOR_BLACK); 
+  BSP_LCD_FillRect(50, 35, 100, 16); 
+
+  BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+  BSP_LCD_SetFont(&Font12);
+  
+  /* Draw Label fixed */
+  BSP_LCD_DisplayStringAt(5, 35, (uint8_t *)"Freq:", LEFT_MODE);
+  
+  /* Draw Value at fixed offset (x=50) */
+  if (freq > 0) {
+      if (freq >= 1000) sprintf(buffer, "%.2f kHz", freq / 1000.0f);
+      else              sprintf(buffer, "%d Hz", (int)freq);
+  } else {
+      sprintf(buffer, "---");
+  }
+  BSP_LCD_DisplayStringAt(50, 35, (uint8_t *)buffer, LEFT_MODE);
+}
+
 void Draw_Buffer(uint16_t *buffer, uint32_t color) {
   static uint16_t old_buffer[MAX_WIDTH];
 
@@ -569,11 +627,17 @@ void Draw_Full_Menu(void) {
   if (show_rms) BSP_LCD_DisplayStringAt(MENU_COL2_X + 20, MENU_ROW1_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"RMS:ON", LEFT_MODE);
   else          BSP_LCD_DisplayStringAt(MENU_COL2_X + 15, MENU_ROW1_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"RMS:OFF", LEFT_MODE);
 
-  BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
-  BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  if (show_hz) {
+    BSP_LCD_SetTextColor(LCD_COLOR_DARKGREEN);
+    BSP_LCD_SetBackColor(LCD_COLOR_DARKGREEN);
+  } else {
+    BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+    BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  }
   BSP_LCD_FillRect(MENU_COL1_X, MENU_ROW2_Y, MENU_BTN_W, MENU_BTN_H);
   BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-  BSP_LCD_DisplayStringAt(MENU_COL1_X + 30, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Hz", LEFT_MODE);
+  if (show_hz) BSP_LCD_DisplayStringAt(MENU_COL1_X + 20, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Hz:ON", LEFT_MODE);
+  else         BSP_LCD_DisplayStringAt(MENU_COL1_X + 20, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Hz:OFF", LEFT_MODE);
 
   BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
   BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
