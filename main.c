@@ -113,6 +113,17 @@ uint8_t show_hz = 1;
 uint8_t cursor_mode = 0;
 uint16_t cursor1_x = 80;
 uint16_t cursor2_x = 160;
+uint8_t show_fft_view = 0;
+
+/* FFT Buffers in CCMRAM */
+#define FFT_SAMPLES 8192
+__attribute__((section(".ccmram"))) float fft_real[FFT_SAMPLES];
+__attribute__((section(".ccmram"))) float fft_imag[FFT_SAMPLES];
+
+/* Twiddle Factors */
+#define TWIDDLE_SIZE (FFT_SAMPLES / 2)
+float twiddle_real[TWIDDLE_SIZE];
+float twiddle_imag[TWIDDLE_SIZE];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -131,6 +142,7 @@ void Draw_Cursor_Info(uint16_t x1, uint16_t val1, uint16_t x2, uint16_t val2, ui
 void Draw_Menu_Overlay(void);
 void Draw_Grid(void);
 void Draw_Full_Menu(void);
+void Init_FFT(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -202,6 +214,8 @@ int main(void)
   BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
   BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
   BSP_LCD_SetFont(&Font12);
+  
+  Init_FFT();
   /* USER CODE END 2 */
 
   /* We should never get here as control is now taken by the scheduler */
@@ -267,6 +281,12 @@ int main(void)
                  y >= MENU_ROW3_Y && y <= (MENU_ROW3_Y + MENU_BTN_H)) {
           cursor_mode++;
           if (cursor_mode > 2) cursor_mode = 0;
+          Draw_Full_Menu();
+          HAL_Delay(200);
+        }
+        else if (x >= MENU_COL2_X && x <= (MENU_COL2_X + MENU_BTN_W) &&
+                 y >= MENU_ROW2_Y && y <= (MENU_ROW2_Y + MENU_BTN_H)) {
+          show_fft_view = !show_fft_view;
           Draw_Full_Menu();
           HAL_Delay(200);
         }
@@ -747,11 +767,18 @@ void Draw_Full_Menu(void) {
   if (show_hz) BSP_LCD_DisplayStringAt(MENU_COL1_X + 20, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Hz:ON", LEFT_MODE);
   else         BSP_LCD_DisplayStringAt(MENU_COL1_X + 20, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Hz:OFF", LEFT_MODE);
 
-  BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
-  BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  /* FFT Button */
+  if (show_fft_view) {
+    BSP_LCD_SetTextColor(LCD_COLOR_DARKGREEN);
+    BSP_LCD_SetBackColor(LCD_COLOR_DARKGREEN);
+  } else {
+    BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+    BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  }
   BSP_LCD_FillRect(MENU_COL2_X, MENU_ROW2_Y, MENU_BTN_W, MENU_BTN_H);
   BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-  BSP_LCD_DisplayStringAt(MENU_COL2_X + 30, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"FFT", LEFT_MODE);
+  if (show_fft_view) BSP_LCD_DisplayStringAt(MENU_COL2_X + 15, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"FFT:ON", LEFT_MODE);
+  else               BSP_LCD_DisplayStringAt(MENU_COL2_X + 15, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"FFT:OFF", LEFT_MODE);
 
   if (cursor_mode > 0) {
     BSP_LCD_SetTextColor(LCD_COLOR_DARKGREEN);
@@ -792,6 +819,14 @@ void Draw_Full_Menu(void) {
   BSP_LCD_DisplayStringAt(0, 280, (uint8_t *)"Wcisnij przycisk USER", CENTER_MODE);
   BSP_LCD_DisplayStringAt(0, 300, (uint8_t *)"aby wrocic", CENTER_MODE);
   BSP_LCD_SetBackColor(LCD_COLOR_ALMOST_BLACK);
+}
+
+void Init_FFT(void) {
+    for (int k = 0; k < TWIDDLE_SIZE; k++) {
+        float angle = -6.283185307f * (float)k / (float)FFT_SAMPLES;
+        twiddle_real[k] = cosf(angle);
+        twiddle_imag[k] = sinf(angle);
+    }
 }
 
 /* USER CODE END 4 */
