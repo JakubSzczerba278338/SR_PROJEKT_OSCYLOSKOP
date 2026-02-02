@@ -55,7 +55,7 @@
 #define MAX_HEIGHT 320
 #define AXIS_Y_POS 0
 #define TICK_HEIGHT 5
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 8000
 #define ADC_RESOLUTION 4095
 
 #define REAL_RANGE_MV 20000
@@ -94,11 +94,10 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-volatile uint16_t measurementData[BUFFER_SIZE];
-uint16_t msrVal = 0;
+volatile uint16_t measurementData[2 * BUFFER_SIZE];
 
-volatile uint32_t adc_ready = 0;
-volatile int measurement_counter = 0;
+volatile uint8_t buf_half_ready = 0;
+volatile uint8_t buf_full_ready = 0;
 volatile uint8_t menu_visible = 0;
 uint8_t button_prev_state = 0;
 TS_StateTypeDef TS_State;
@@ -203,7 +202,14 @@ int main(void)
   /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
+  
+  hadc3.DMA_Handle->Init.Mode = DMA_CIRCULAR;
+  if (HAL_DMA_Init(hadc3.DMA_Handle) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  
+  HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, 2 * BUFFER_SIZE);
 
   while (1)
   {
@@ -215,7 +221,8 @@ int main(void)
         Draw_Full_Menu();
       } else {
         BSP_LCD_Clear(LCD_COLOR_BLACK);
-        HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
+        Draw_Grid();
+        HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, 2 * BUFFER_SIZE);
       }
       HAL_Delay(50);
     }
@@ -253,8 +260,16 @@ int main(void)
         }
       }
     }
-    else if (adc_ready) {
-      adc_ready = 0;
+    else if (!menu_visible && (buf_half_ready || buf_full_ready)) {
+      volatile uint16_t *current_data_ptr;
+      
+      if (buf_half_ready) {
+        current_data_ptr = measurementData;
+        buf_half_ready = 0;
+      } else {
+        current_data_ptr = &measurementData[BUFFER_SIZE];
+        buf_full_ready = 0;
+      }
       
       int hysteresis = 50;
       
@@ -262,11 +277,10 @@ int main(void)
         uint16_t min_val = 4095;
         uint16_t max_val = 0;
         for(int i=0; i<BUFFER_SIZE; i++) {
-          if(measurementData[i] < min_val) min_val = measurementData[i];
-          if(measurementData[i] > max_val) max_val = measurementData[i];
+          if(current_data_ptr[i] < min_val) min_val = current_data_ptr[i];
+          if(current_data_ptr[i] > max_val) max_val = current_data_ptr[i];
         }
         uint16_t target_level = (min_val + max_val) / 2;
-        /* Wygładzanie poziomu triggera */
         current_trig_level = (current_trig_level * 9 + target_level) / 10;
         hysteresis = (max_val - min_val) / 10;
         if (hysteresis < 20) hysteresis = 20;
@@ -275,40 +289,50 @@ int main(void)
         hysteresis = 50;
       }
       
-      int search_limit = 2*MAX_WIDTH;
-      int trigger_idx = Find_Trigger_Index(measurementData, current_trig_level, search_limit, hysteresis);
-      static int last_trigger_idx = 0;
+      int center_offset = MAX_WIDTH / 2;
+      int search_start = center_offset;
+      int search_limit = BUFFER_SIZE - MAX_WIDTH - search_start;
+      
+      int trigger_relative_idx = Find_Trigger_Index(&current_data_ptr[search_start], current_trig_level, search_limit, hysteresis);
+      
+      int trigger_abs_idx;
+      static int last_valid_idx = 0;
       static int no_trigger_cnt = 0;
 
-      if (trigger_idx != -1) {
-        last_trigger_idx = trigger_idx;
+      if (trigger_relative_idx != -1) {
+        trigger_abs_idx = search_start + trigger_relative_idx;
+        last_valid_idx = trigger_abs_idx;
         no_trigger_cnt = 0;
         trigger_locked = 1;
       } else {
         no_trigger_cnt++;
         if (no_trigger_cnt > 5) {
-          trigger_idx = 0;
+          trigger_abs_idx = center_offset;
           trigger_locked = 0;
         } else {
-          trigger_idx = last_trigger_idx;
+          trigger_abs_idx = last_valid_idx;
           trigger_locked = 1;
         }
       }
-      if (trigger_idx > search_limit) trigger_idx = 0;
+      
+      if (trigger_abs_idx < center_offset) trigger_abs_idx = center_offset;
+      if (trigger_abs_idx > BUFFER_SIZE - center_offset) trigger_abs_idx = center_offset;
 
       uint16_t displayData[MAX_WIDTH];
 
       for (int i = 0; i < MAX_WIDTH; i++) {
-        displayData[i] = calculate_position(measurementData[trigger_idx + i]);
+        int idx = trigger_abs_idx - center_offset + i;
+        if (idx < 0) idx = 0;
+        if (idx >= BUFFER_SIZE) idx = BUFFER_SIZE - 1;
+        displayData[i] = calculate_position(current_data_ptr[idx]);
       }
       Draw_Buffer(displayData, LCD_COLOR_RED);
-      if (show_vpp) Draw_Vpp(measurementData);
-      if (show_rms) Draw_RMS(measurementData);
+      if (show_vpp) Draw_Vpp((uint16_t*)current_data_ptr);
+      if (show_rms) Draw_RMS((uint16_t*)current_data_ptr);
       if (show_hz) {
-        float freq = Calculate_Frequency(measurementData, current_trig_level, hysteresis);
+        float freq = Calculate_Frequency(current_data_ptr, current_trig_level, hysteresis);
         Draw_Freq(freq);
       }
-      HAL_ADC_Start_DMA(&hadc3, (uint32_t*)measurementData, BUFFER_SIZE);
     }
   }
   /* USER CODE END 3 */
@@ -578,7 +602,14 @@ void Draw_Buffer(uint16_t *buffer, uint32_t color) {
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
   if (hadc->Instance == ADC3) {
-    adc_ready = 1;
+    buf_full_ready = 1;
+  }
+}
+
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
+{
+  if (hadc->Instance == ADC3) {
+    buf_half_ready = 1;
   }
 }
 
@@ -587,7 +618,7 @@ void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
   if (hadc->Instance == ADC3) {
     HAL_GPIO_TogglePin(GPIOG, GPIO_PIN_13);
     HAL_ADC_Stop_DMA(hadc);
-    HAL_ADC_Start_DMA(hadc, (uint32_t*)measurementData, BUFFER_SIZE);
+    HAL_ADC_Start_DMA(hadc, (uint32_t*)measurementData, 2 * BUFFER_SIZE);
   }
 }
 
