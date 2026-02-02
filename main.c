@@ -112,6 +112,7 @@ uint16_t current_trig_level = 2048;
 uint8_t show_hz = 1;
 uint8_t cursor_mode = 0;
 uint16_t cursor1_x = 80;
+uint16_t cursor2_x = 160;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -126,7 +127,7 @@ void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]);
 void Draw_RMS(volatile uint16_t measurements[BUFFER_SIZE]);
 void Draw_Freq(float freq);
 float Calculate_Frequency(volatile uint16_t *data, uint16_t level, int hysteresis);
-void Draw_Cursor_Info(uint16_t x1, uint16_t val1, uint8_t mode);
+void Draw_Cursor_Info(uint16_t x1, uint16_t val1, uint16_t x2, uint16_t val2, uint8_t mode);
 void Draw_Menu_Overlay(void);
 void Draw_Grid(void);
 void Draw_Full_Menu(void);
@@ -264,7 +265,8 @@ int main(void)
         }
         else if (x >= MENU_COL1_X && x <= (MENU_COL1_X + MENU_BTN_W) &&
                  y >= MENU_ROW3_Y && y <= (MENU_ROW3_Y + MENU_BTN_H)) {
-          cursor_mode = !cursor_mode;
+          cursor_mode++;
+          if (cursor_mode > 2) cursor_mode = 0;
           Draw_Full_Menu();
           HAL_Delay(200);
         }
@@ -277,7 +279,16 @@ int main(void)
         if (TS_State.Y > 20) {
           uint16_t touch_x = TS_State.X;
           if (touch_x >= MAX_WIDTH) touch_x = MAX_WIDTH - 1;
-          cursor1_x = touch_x;
+          
+          if (cursor_mode == 1) {
+            cursor1_x = touch_x;
+          } else if (cursor_mode == 2) {
+            /* Move the closest cursor */
+            int d1 = abs(touch_x - cursor1_x);
+            int d2 = abs(touch_x - cursor2_x);
+            if (d1 <= d2) cursor1_x = touch_x;
+            else          cursor2_x = touch_x;
+          }
         }
       }
     }
@@ -357,7 +368,8 @@ int main(void)
       }
       if (cursor_mode > 0) {
         uint16_t y1 = displayData[cursor1_x];
-        Draw_Cursor_Info(cursor1_x, y1, cursor_mode);
+        uint16_t y2 = displayData[cursor2_x];
+        Draw_Cursor_Info(cursor1_x, y1, cursor2_x, y2, cursor_mode);
       }
     }
   }
@@ -609,28 +621,43 @@ void Draw_Freq(float freq) {
   BSP_LCD_DisplayStringAt(50, 35, (uint8_t *)buffer, LEFT_MODE);
 }
 
-void Draw_Cursor_Info(uint16_t x1, uint16_t y1, uint8_t mode) {
+void Draw_Cursor_Info(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint8_t mode) {
     char buffer[64];
     
     /* Convert Y position (pixels from bottom) back to voltage */
     #define Y_TO_MV(y) ( (((int32_t)(y) * SCREEN_RANGE_MV) / MAX_HEIGHT) + SCREEN_MIN_MV )
     
     int mv1 = Y_TO_MV(y1);
+    int mv2 = Y_TO_MV(y2);
 
-    /* Draw cursor line */
+    /* Draw cursor line(s) */
     BSP_LCD_SetTextColor(LCD_COLOR_YELLOW);
     BSP_LCD_DrawLine(x1, 0, x1, MAX_HEIGHT);
+    
+    if (mode == 2) {
+        BSP_LCD_SetTextColor(LCD_COLOR_CYAN);
+        BSP_LCD_DrawLine(x2, 0, x2, MAX_HEIGHT);
+    }
     
     /* Draw Info Box */
     BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
     BSP_LCD_SetFont(&Font12);
 
-    /* Single Cursor Info */
-    int abs_mv = (mv1 < 0) ? -mv1 : mv1;
-    char sign = (mv1 < 0) ? '-' : ' ';
-    sprintf(buffer, "C1:%c%d.%02dV", sign, abs_mv/1000, (abs_mv%1000)/10);
-    uint16_t tx = (x1 > MAX_WIDTH - 80) ? x1 - 85 : x1 + 5;
-    BSP_LCD_DisplayStringAt(tx, 50, (uint8_t *)buffer, LEFT_MODE);
+    if (mode == 1) {
+        /* Single Cursor Info */
+        int abs_mv = (mv1 < 0) ? -mv1 : mv1;
+        char sign = (mv1 < 0) ? '-' : ' ';
+        sprintf(buffer, "C1:%c%d.%02dV", sign, abs_mv/1000, (abs_mv%1000)/10);
+        uint16_t tx = (x1 > MAX_WIDTH - 80) ? x1 - 85 : x1 + 5;
+        BSP_LCD_DisplayStringAt(tx, 50, (uint8_t *)buffer, LEFT_MODE);
+    } else if (mode == 2) {
+        /* Two Cursors - show delta V */
+        int delta = mv1 - mv2;
+        int abs_delta = (delta < 0) ? -delta : delta;
+        char dsign = (delta < 0) ? '-' : '+';
+        sprintf(buffer, "dV:%c%d.%02dV", dsign, abs_delta/1000, (abs_delta%1000)/10);
+        BSP_LCD_DisplayStringAt(5, 305, (uint8_t *)buffer, LEFT_MODE);
+    }
 }
 
 void Draw_Buffer(uint16_t *buffer, uint32_t color) {
@@ -735,8 +762,9 @@ void Draw_Full_Menu(void) {
   }
   BSP_LCD_FillRect(MENU_COL1_X, MENU_ROW3_Y, MENU_BTN_W, MENU_BTN_H);
   BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-  if (cursor_mode == 0) BSP_LCD_DisplayStringAt(MENU_COL1_X + 15, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Cur:OFF", LEFT_MODE);
-  else                  BSP_LCD_DisplayStringAt(MENU_COL1_X + 15, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Cur:ON", LEFT_MODE);
+  if (cursor_mode == 0)      BSP_LCD_DisplayStringAt(MENU_COL1_X + 15, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Cur:OFF", LEFT_MODE);
+  else if (cursor_mode == 1) BSP_LCD_DisplayStringAt(MENU_COL1_X + 20, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Cur:1", LEFT_MODE);
+  else                       BSP_LCD_DisplayStringAt(MENU_COL1_X + 20, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Cur:2", LEFT_MODE);
 
   if (trigger_auto) {
     BSP_LCD_SetTextColor(LCD_COLOR_DARKGREEN);
