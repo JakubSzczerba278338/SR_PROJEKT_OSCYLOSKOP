@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -109,6 +110,8 @@ uint8_t trigger_auto = 1;
 uint8_t trigger_locked = 0;
 uint16_t current_trig_level = 2048;
 uint8_t show_hz = 1;
+uint8_t cursor_mode = 0;
+uint16_t cursor1_x = 80;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -123,6 +126,7 @@ void Draw_Vpp(volatile uint16_t measurements[BUFFER_SIZE]);
 void Draw_RMS(volatile uint16_t measurements[BUFFER_SIZE]);
 void Draw_Freq(float freq);
 float Calculate_Frequency(volatile uint16_t *data, uint16_t level, int hysteresis);
+void Draw_Cursor_Info(uint16_t x1, uint16_t val1, uint8_t mode);
 void Draw_Menu_Overlay(void);
 void Draw_Grid(void);
 void Draw_Full_Menu(void);
@@ -258,9 +262,27 @@ int main(void)
           Draw_Full_Menu();
           HAL_Delay(200);
         }
+        else if (x >= MENU_COL1_X && x <= (MENU_COL1_X + MENU_BTN_W) &&
+                 y >= MENU_ROW3_Y && y <= (MENU_ROW3_Y + MENU_BTN_H)) {
+          cursor_mode = !cursor_mode;
+          Draw_Full_Menu();
+          HAL_Delay(200);
+        }
       }
     }
-    else if (!menu_visible && (buf_half_ready || buf_full_ready)) {
+    else {
+      /* Obsługa dotyku dla kursora */
+      BSP_TS_GetState(&TS_State);
+      if (TS_State.TouchDetected && cursor_mode > 0) {
+        if (TS_State.Y > 20) {
+          uint16_t touch_x = TS_State.X;
+          if (touch_x >= MAX_WIDTH) touch_x = MAX_WIDTH - 1;
+          cursor1_x = touch_x;
+        }
+      }
+    }
+    
+    if (!menu_visible && (buf_half_ready || buf_full_ready)) {
       volatile uint16_t *current_data_ptr;
       
       if (buf_half_ready) {
@@ -332,6 +354,10 @@ int main(void)
       if (show_hz) {
         float freq = Calculate_Frequency(current_data_ptr, current_trig_level, hysteresis);
         Draw_Freq(freq);
+      }
+      if (cursor_mode > 0) {
+        uint16_t y1 = displayData[cursor1_x];
+        Draw_Cursor_Info(cursor1_x, y1, cursor_mode);
       }
     }
   }
@@ -583,6 +609,30 @@ void Draw_Freq(float freq) {
   BSP_LCD_DisplayStringAt(50, 35, (uint8_t *)buffer, LEFT_MODE);
 }
 
+void Draw_Cursor_Info(uint16_t x1, uint16_t y1, uint8_t mode) {
+    char buffer[64];
+    
+    /* Convert Y position (pixels from bottom) back to voltage */
+    #define Y_TO_MV(y) ( (((int32_t)(y) * SCREEN_RANGE_MV) / MAX_HEIGHT) + SCREEN_MIN_MV )
+    
+    int mv1 = Y_TO_MV(y1);
+
+    /* Draw cursor line */
+    BSP_LCD_SetTextColor(LCD_COLOR_YELLOW);
+    BSP_LCD_DrawLine(x1, 0, x1, MAX_HEIGHT);
+    
+    /* Draw Info Box */
+    BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
+    BSP_LCD_SetFont(&Font12);
+
+    /* Single Cursor Info */
+    int abs_mv = (mv1 < 0) ? -mv1 : mv1;
+    char sign = (mv1 < 0) ? '-' : ' ';
+    sprintf(buffer, "C1:%c%d.%02dV", sign, abs_mv/1000, (abs_mv%1000)/10);
+    uint16_t tx = (x1 > MAX_WIDTH - 80) ? x1 - 85 : x1 + 5;
+    BSP_LCD_DisplayStringAt(tx, 50, (uint8_t *)buffer, LEFT_MODE);
+}
+
 void Draw_Buffer(uint16_t *buffer, uint32_t color) {
   static uint16_t old_buffer[MAX_WIDTH];
 
@@ -676,11 +726,17 @@ void Draw_Full_Menu(void) {
   BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
   BSP_LCD_DisplayStringAt(MENU_COL2_X + 30, MENU_ROW2_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"FFT", LEFT_MODE);
 
-  BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
-  BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  if (cursor_mode > 0) {
+    BSP_LCD_SetTextColor(LCD_COLOR_DARKGREEN);
+    BSP_LCD_SetBackColor(LCD_COLOR_DARKGREEN);
+  } else {
+    BSP_LCD_SetTextColor(LCD_COLOR_GRAY);
+    BSP_LCD_SetBackColor(LCD_COLOR_GRAY);
+  }
   BSP_LCD_FillRect(MENU_COL1_X, MENU_ROW3_Y, MENU_BTN_W, MENU_BTN_H);
   BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-  BSP_LCD_DisplayStringAt(MENU_COL1_X + 15, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Kursory", LEFT_MODE);
+  if (cursor_mode == 0) BSP_LCD_DisplayStringAt(MENU_COL1_X + 15, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Cur:OFF", LEFT_MODE);
+  else                  BSP_LCD_DisplayStringAt(MENU_COL1_X + 15, MENU_ROW3_Y + MENU_TEXT_OFFSET_Y, (uint8_t *)"Cur:ON", LEFT_MODE);
 
   if (trigger_auto) {
     BSP_LCD_SetTextColor(LCD_COLOR_DARKGREEN);
